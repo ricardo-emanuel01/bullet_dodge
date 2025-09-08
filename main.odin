@@ -14,6 +14,7 @@ import rl "vendor:raylib"
 
 
 Vec2 :: [2]f32
+BULLET_RADIUS :: 5
 
 // To get the bullet type from unmarshalling
 BulletType :: enum {
@@ -143,12 +144,12 @@ draw_bullets :: proc(bullets: [dynamic]Bullet) {
             case .bouncer:
                 color = rl.WHITE
             case .bulldozer:
-                color = rl.GREEN
+                color = rl.GRAY
             case .constructor:
                 color = rl.BLUE
         }
         // TODO: Define the radius of each projectile
-        rl.DrawCircleV(bullet.position, f32(5), color)
+        rl.DrawCircleV(bullet.position, f32(BULLET_RADIUS), color)
     }
 }
 
@@ -214,7 +215,7 @@ get_perp_vector :: proc(vector: Vec2) -> Vec2 {
 }
 
 check_collision_bullet_wall :: proc(wall: Wall, bullet: Bullet, wall_thickness: u8, collision_point, collision_normal_vector: ^Vec2) -> bool {
-    circle_radius := f32(5)
+    circle_radius_f32 := f32(BULLET_RADIUS)
     first_end   := Vec2 { f32(wall.x1), f32(wall.y1) }
     second_end  := Vec2 { f32(wall.x2), f32(wall.y2) }
     wall_vector := second_end - first_end
@@ -225,14 +226,14 @@ check_collision_bullet_wall :: proc(wall: Wall, bullet: Bullet, wall_thickness: 
     p3 := second_end + wall_normal_vector * f32(wall_thickness) / f32(2)
     p4 := second_end - wall_normal_vector * f32(wall_thickness) / f32(2)
 
-    collision_point^ = bullet.position + bullet.direction * circle_radius
-    if rl.CheckCollisionCircleLine(bullet.position, circle_radius, p1, p2) {
+    collision_point^ = bullet.position + bullet.direction * circle_radius_f32
+    if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p1, p2) {
         collision_normal_vector^ = linalg.vector_normalize(-1 * wall_vector)
-    } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius, p1, p3) {
+    } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p1, p3) {
         collision_normal_vector^ = linalg.vector_normalize(wall_normal_vector)    
-    } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius, p3, p4) {
+    } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p3, p4) {
         collision_normal_vector^ = linalg.vector_normalize(wall_vector)
-    } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius, p2, p4) {
+    } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p2, p4) {
         collision_normal_vector^ = linalg.vector_normalize(-1 * wall_normal_vector)
     } else { return false }
 
@@ -241,7 +242,7 @@ check_collision_bullet_wall :: proc(wall: Wall, bullet: Bullet, wall_thickness: 
 
 check_collision_bullets_walls :: proc(bullets: ^[dynamic]Bullet, walls: ^[dynamic]Wall, sounds: Sounds, length: u16, thickness: u8) {
     for i in 0..<len(bullets) {
-        ray_cast: [2]Vec2 = { bullets[i].position, bullets[i].position + bullets[i].direction * (f32(thickness) + f32(5)) }
+        ray_cast: [2]Vec2 = { bullets[i].position, bullets[i].position + bullets[i].direction * (f32(thickness) + f32(BULLET_RADIUS)) }
         collision_point, collision_normal_vector: Vec2
 
         // TODO: Check for the closest one
@@ -250,16 +251,11 @@ check_collision_bullets_walls :: proc(bullets: ^[dynamic]Bullet, walls: ^[dynami
                 switch bullets[i].type {
                     case .bouncer:
                         rl.PlaySound(sounds.collision)
-                        bullets[i].direction *= -1
+                        negative_bullet_direction := -1 * bullets[i].direction
+                        current_bullet_direction  := bullets[i].direction
 
-                        angle_wall_normal_ray := linalg.angle_between(bullets[i].direction, collision_normal_vector)
-                        
-                        new_direction := rl.Vector2Rotate(bullets[i].direction, 2 * angle_wall_normal_ray)
-                        if linalg.angle_between(new_direction, collision_normal_vector) > angle_wall_normal_ray + f32(0.01) || linalg.angle_between(new_direction, collision_normal_vector) < angle_wall_normal_ray - f32(0.01) {
-                            bullets[i].direction = rl.Vector2Rotate(bullets[i].direction, -2 * angle_wall_normal_ray)
-                        } else {
-                            bullets[i].direction = new_direction
-                        }
+                        component_to_normal_vec := collision_normal_vector * linalg.vector_dot(negative_bullet_direction, collision_normal_vector)
+                        bullets[i].direction = current_bullet_direction + 2 * component_to_normal_vec
 
                     case .constructor:
                         rl.PlaySound(sounds.wall_creation)
@@ -282,7 +278,7 @@ check_collision_bullets_walls :: proc(bullets: ^[dynamic]Bullet, walls: ^[dynami
 
 check_collision_player :: proc(state: ^State) -> bool {
     for bullet in state.bullets {
-        if rl.CheckCollisionCircles(state.player_position, f32(state.player_radius), bullet.position, f32(5)) {
+        if rl.CheckCollisionCircles(state.player_position, f32(state.player_radius), bullet.position, f32(BULLET_RADIUS)) {
             return true
         }
     }
@@ -329,7 +325,7 @@ main :: proc() {
     rl.SetConfigFlags({ rl.ConfigFlag.MSAA_4X_HINT });
     rl.InitWindow(i32(window_size[0]), i32(window_size[1]), "Bullet Dodge")
     rl.InitAudioDevice()
-    rl.SetTargetFPS(60)
+    rl.SetTargetFPS(120)
     rl.SetExitKey(rl.KeyboardKey.KEY_NULL)
 
     sounds := Sounds {
@@ -380,10 +376,10 @@ main :: proc() {
                         draw_bullets(state.bullets)
                         rl.DrawCircleV(state.player_position, f32(state.player_radius), rl.RED)
                         rl.DrawFPS(5, 5)
-                        rl.DrawText(strings.clone_to_cstring(time_survived_str, allocator = context.temp_allocator), 5, 25, 20, rl.WHITE)
-                        rl.DrawText(strings.clone_to_cstring(frametime_str, allocator = context.temp_allocator), 5, 45, 20, rl.WHITE)
-                        rl.DrawText(strings.clone_to_cstring(walls_str, allocator = context.temp_allocator), 5, 65, 20, rl.WHITE)
-                        rl.DrawText(strings.clone_to_cstring(bullets_str, allocator = context.temp_allocator), 5, 85, 20, rl.WHITE)
+                        rl.DrawText(strings.clone_to_cstring(time_survived_str, allocator = context.temp_allocator), 5, 25, 20, rl.LIME)
+                        rl.DrawText(strings.clone_to_cstring(frametime_str, allocator = context.temp_allocator), 5, 45, 20, rl.LIME)
+                        rl.DrawText(strings.clone_to_cstring(walls_str, allocator = context.temp_allocator), 5, 65, 20, rl.LIME)
+                        rl.DrawText(strings.clone_to_cstring(bullets_str, allocator = context.temp_allocator), 5, 85, 20, rl.LIME)
                     rl.EndDrawing()
                     free_all(context.temp_allocator)
                 }
@@ -457,10 +453,10 @@ main :: proc() {
                     draw_bullets(state.bullets)
                     rl.DrawCircleV(state.player_position, f32(state.player_radius), rl.RED)
                     rl.DrawFPS(5, 5)
-                    rl.DrawText(strings.clone_to_cstring(time_survived_str, allocator = context.temp_allocator), 5, 25, 20, rl.WHITE)
-                    rl.DrawText(strings.clone_to_cstring(frametime_str, allocator = context.temp_allocator), 5, 45, 20, rl.WHITE)
-                    rl.DrawText(strings.clone_to_cstring(walls_str, allocator = context.temp_allocator), 5, 65, 20, rl.WHITE)
-                    rl.DrawText(strings.clone_to_cstring(bullets_str, allocator = context.temp_allocator), 5, 85, 20, rl.WHITE)
+                    rl.DrawText(strings.clone_to_cstring(time_survived_str, allocator = context.temp_allocator), 5, 25, 20, rl.LIME)
+                    rl.DrawText(strings.clone_to_cstring(frametime_str, allocator = context.temp_allocator), 5, 45, 20, rl.LIME)
+                    rl.DrawText(strings.clone_to_cstring(walls_str, allocator = context.temp_allocator), 5, 65, 20, rl.LIME)
+                    rl.DrawText(strings.clone_to_cstring(bullets_str, allocator = context.temp_allocator), 5, 85, 20, rl.LIME)
                 rl.EndDrawing()
                 free_all(context.temp_allocator)
             }
