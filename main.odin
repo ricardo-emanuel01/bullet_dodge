@@ -211,11 +211,8 @@ check_collision_bullets_walls :: proc(bullets: ^[dynamic]Bullet, walls: ^[dynami
                 switch bullets[i].type {
                     case .bouncer:
                         rl.PlaySound(sounds.collision)
-                        negative_bullet_direction := -1 * bullets[i].direction
-                        current_bullet_direction  := bullets[i].direction
-
-                        component_to_normal_vec := collision_normal_vector * linalg.vector_dot(negative_bullet_direction, collision_normal_vector)
-                        bullets[i].direction = current_bullet_direction + 2 * component_to_normal_vec
+                        component_to_normal_vec := collision_normal_vector * linalg.vector_dot(bullets[i].direction, collision_normal_vector)
+                        bullets[i].direction -= 2 * component_to_normal_vec
 
                     case .constructor:
                         rl.PlaySound(sounds.wall_creation)
