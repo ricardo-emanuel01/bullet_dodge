@@ -199,27 +199,52 @@ update_player :: proc(state: ^State, frametime: f32) {
     state.player_position += direction * f32(state.player_speed) * frametime
 }
 
+get_perp_vector :: proc(vector: Vec2) -> Vec2 {
+    return linalg.vector_normalize( Vec2 { -1 * vector.y, vector.x } )
+}
+
+check_collision_bullet_wall :: proc(wall: Wall, bullet: Bullet, wall_thickness: u8, collision_point, collision_normal_vector: ^Vec2) -> bool {
+    circle_radius := f32(5)
+    first_end   := Vec2 { f32(wall.x1), f32(wall.y1) }
+    second_end  := Vec2 { f32(wall.x2), f32(wall.y2) }
+    wall_vector := second_end - first_end
+    wall_normal_vector := get_perp_vector(wall_vector)
+
+    p1 := first_end  + wall_normal_vector * f32(wall_thickness) / f32(2)
+    p2 := first_end  - wall_normal_vector * f32(wall_thickness) / f32(2)
+    p3 := second_end + wall_normal_vector * f32(wall_thickness) / f32(2)
+    p4 := second_end - wall_normal_vector * f32(wall_thickness) / f32(2)
+
+    collision_point^ = bullet.position + bullet.direction * circle_radius
+    if rl.CheckCollisionCircleLine(bullet.position, circle_radius, p1, p2) {
+        collision_normal_vector^ = linalg.vector_normalize(-1 * wall_vector)
+    } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius, p1, p3) {
+        collision_normal_vector^ = linalg.vector_normalize(wall_normal_vector)    
+    } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius, p3, p4) {
+        collision_normal_vector^ = linalg.vector_normalize(wall_vector)
+    } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius, p2, p4) {
+        collision_normal_vector^ = linalg.vector_normalize(-1 * wall_normal_vector)
+    } else { return false }
+
+    return true
+}
+
 check_collision_bullets_walls :: proc(bullets: ^[dynamic]Bullet, walls: ^[dynamic]Wall, length: u16, thickness: u8) {
     for i in 0..<len(bullets) {
         ray_cast: [2]Vec2 = { bullets[i].position, bullets[i].position + bullets[i].direction * (f32(thickness) + f32(5)) }
-        collision_point: Vec2
+        collision_point, collision_normal_vector: Vec2
 
         // TODO: Check for the closest one
         for j in 0..<len(walls) {
-            if rl.CheckCollisionLines(ray_cast[0], ray_cast[1], Vec2 {f32(walls[j].x1), f32(walls[j].y1)}, Vec2 {f32(walls[j].x2), f32(walls[j].y2)}, &collision_point) {
+            if check_collision_bullet_wall(walls[j], bullets[i], thickness, &collision_point, &collision_normal_vector) {
                 switch bullets[i].type {
                     case .bouncer:
                         bullets[i].direction *= -1
-                        wall_vector: Vec2 = linalg.vector_normalize(Vec2 {f32(walls[j].x2), f32(walls[j].y2)} - Vec2 {f32(walls[j].x1), f32(walls[j].y1)})
-                        wall_normal_vector: Vec2 = { -1 * wall_vector.y, wall_vector.x }
-                        if rl.Vector2DotProduct(wall_normal_vector, bullets[i].direction) < f32(0) {
-                            wall_normal_vector *= -1
-                        }
 
-                        angle_wall_normal_ray := linalg.angle_between(bullets[i].direction, wall_normal_vector)
+                        angle_wall_normal_ray := linalg.angle_between(bullets[i].direction, collision_normal_vector)
                         
                         new_direction := rl.Vector2Rotate(bullets[i].direction, 2 * angle_wall_normal_ray)
-                        if linalg.angle_between(new_direction, wall_normal_vector) > angle_wall_normal_ray + f32(0.01) || linalg.angle_between(new_direction, wall_normal_vector) < angle_wall_normal_ray - f32(0.01) {
+                        if linalg.angle_between(new_direction, collision_normal_vector) > angle_wall_normal_ray + f32(0.01) || linalg.angle_between(new_direction, collision_normal_vector) < angle_wall_normal_ray - f32(0.01) {
                             bullets[i].direction = rl.Vector2Rotate(bullets[i].direction, -2 * angle_wall_normal_ray)
                         } else {
                             bullets[i].direction = new_direction
@@ -259,16 +284,18 @@ check_collision_player :: proc(state: ^State) -> bool {
 }
 
 create_new_wall :: proc(walls: ^[dynamic]Wall, impact_direction, collision_point: Vec2, length: u16) {
-    new_wall_vector: Vec2 = rl.Vector2Normalize({ -1 * impact_direction.y, impact_direction.x })
+    new_wall_vector: Vec2 = get_perp_vector(impact_direction)
     p1 := collision_point + new_wall_vector * f32(length) / f32(2)
     p2 := collision_point - new_wall_vector * f32(length) / f32(2)
+    invulnerable := false
 
+    if rand.uint32() % u32(2) == 1 { invulnerable = true }
     new_wall: Wall = {
         x1 = i16(p1.x),
         y1 = i16(p1.y),
         x2 = i16(p2.x),
         y2 = i16(p2.y),
-        invulnerable = false
+        invulnerable = invulnerable
     }
 
     append(walls, new_wall)
