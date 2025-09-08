@@ -66,6 +66,15 @@ State :: struct {
     player_radius:          u8
 }
 
+Sounds :: struct {
+    background:       rl.Music,
+    collision:        rl.Sound,
+    fire:             rl.Sound,
+    lose:             rl.Sound,
+    wall_destruction: rl.Sound,
+    wall_creation:    rl.Sound
+}
+
 Commands :: enum {
     Up,
     Down,
@@ -154,12 +163,13 @@ fire :: proc(bullets: ^[dynamic]Bullet, bullet_spawner: BulletSpawner) {
     append(bullets, current_bullet)
 }
 
-update_bullet_spawners :: proc(bullets: ^[dynamic]Bullet, bullet_spawners: ^[dynamic]BulletSpawner, frametime: f32) {
+update_bullet_spawners :: proc(bullets: ^[dynamic]Bullet, bullet_spawners: ^[dynamic]BulletSpawner, fire_sound_fx: rl.Sound, frametime: f32) {
     for &bullet_spawner in bullet_spawners {
         bullet_spawner.timer -= frametime
 
         if bullet_spawner.timer <= f32(0) {
             fire(bullets, bullet_spawner)
+            rl.PlaySound(fire_sound_fx)
             bullet_spawner.timer = bullet_spawner.spawn_frequency
         }
     }
@@ -229,7 +239,7 @@ check_collision_bullet_wall :: proc(wall: Wall, bullet: Bullet, wall_thickness: 
     return true
 }
 
-check_collision_bullets_walls :: proc(bullets: ^[dynamic]Bullet, walls: ^[dynamic]Wall, length: u16, thickness: u8) {
+check_collision_bullets_walls :: proc(bullets: ^[dynamic]Bullet, walls: ^[dynamic]Wall, sounds: Sounds, length: u16, thickness: u8) {
     for i in 0..<len(bullets) {
         ray_cast: [2]Vec2 = { bullets[i].position, bullets[i].position + bullets[i].direction * (f32(thickness) + f32(5)) }
         collision_point, collision_normal_vector: Vec2
@@ -239,6 +249,7 @@ check_collision_bullets_walls :: proc(bullets: ^[dynamic]Bullet, walls: ^[dynami
             if check_collision_bullet_wall(walls[j], bullets[i], thickness, &collision_point, &collision_normal_vector) {
                 switch bullets[i].type {
                     case .bouncer:
+                        rl.PlaySound(sounds.collision)
                         bullets[i].direction *= -1
 
                         angle_wall_normal_ray := linalg.angle_between(bullets[i].direction, collision_normal_vector)
@@ -251,11 +262,13 @@ check_collision_bullets_walls :: proc(bullets: ^[dynamic]Bullet, walls: ^[dynami
                         }
 
                     case .constructor:
+                        rl.PlaySound(sounds.wall_creation)
                         create_new_wall(walls, bullets[i].direction, collision_point, length)
                         unordered_remove(bullets, i)
 
                     case .bulldozer:
                         if !walls[j].invulnerable {
+                            rl.PlaySound(sounds.wall_destruction)
                             unordered_remove(walls, j)
                             unordered_remove(bullets, i)
                         }
@@ -309,60 +322,75 @@ main :: proc() {
     arena_alloc := mem.arena_allocator(&arena)
     game_state := GameState.Menu
     list_view_visibility := false
-    window_size: Vec2 = {200, 200}
+    window_size: Vec2 = {200, 400}
 
     state: ^State
 
     rl.SetConfigFlags({ rl.ConfigFlag.MSAA_4X_HINT });
-    rl.InitWindow(i32(window_size[0]), i32(window_size[1]), "testing")
+    rl.InitWindow(i32(window_size[0]), i32(window_size[1]), "Bullet Dodge")
+    rl.InitAudioDevice()
     rl.SetTargetFPS(60)
     rl.SetExitKey(rl.KeyboardKey.KEY_NULL)
+
+    sounds := Sounds {
+        background       = rl.LoadMusicStream("sounds/background.ogg"),
+        fire             = rl.LoadSound("sounds/fire.ogg"),
+        lose             = rl.LoadSound("sounds/lose.ogg"),
+        collision        = rl.LoadSound("sounds/collision.ogg"),
+        wall_creation    = rl.LoadSound("sounds/wall_creation.ogg"),
+        wall_destruction = rl.LoadSound("sounds/wall_destruction.ogg")
+    }
 
     for game_state != .Close {
         frametime: f32
         switch game_state {
             case .Playing:
             {
+                if !rl.IsMusicStreamPlaying(sounds.background) { rl.PlayMusicStream(sounds.background) }
+                rl.UpdateMusicStream(sounds.background)
+
                 frametime = rl.GetFrameTime()
                 state.time_survived += frametime
                 process_input(&state.input)
                 if Commands.Menu in state.input {
                     game_state = .Menu
-                    window_size = {200, 200}
+                    window_size = {200, 400}
                     rl.SetWindowSize(i32(window_size.x), i32(window_size.y))
                 } else {
-                    update_bullet_spawners(&state.bullets, &state.bullet_spawners, frametime)
+                    update_bullet_spawners(&state.bullets, &state.bullet_spawners, sounds.fire, frametime)
                     update_bullets(&state.bullets, state.map_width, state.map_height, frametime)
                     update_player(state, frametime)
-                    check_collision_bullets_walls(&state.bullets, &state.walls, state.length_generated_walls, state.wall_thickness)
+                    check_collision_bullets_walls(&state.bullets, &state.walls, sounds, state.length_generated_walls, state.wall_thickness)
                     if check_collision_player(state) {
                         game_state = .Lose
-                        window_size = {200, 200}
+                        window_size = {500, 200}
+                        rl.PlaySound(sounds.lose)
                         rl.SetWindowSize(i32(window_size.x), i32(window_size.y))
                         break
                     }
     
-                    time_survived_str := fmt.aprintf("You survived until now: %v seconds", state.time_survived, allocator = context.temp_allocator)
+                    time_survived_str := fmt.aprintf("You survived %.2v seconds", state.time_survived, allocator = context.temp_allocator)
                     frametime_str := fmt.aprintf("frametime: %v seconds", frametime, allocator = context.temp_allocator)
                     walls_str := fmt.aprintf("walls: %v", len(state.walls), allocator = context.temp_allocator)
                     bullets_str := fmt.aprintf("bullets: %v", len(state.bullets), allocator = context.temp_allocator)
     
                     rl.BeginDrawing()
                         rl.ClearBackground(rl.BLACK)
+                        draw_walls(state)
+                        draw_bullets(state.bullets)
+                        rl.DrawCircleV(state.player_position, f32(state.player_radius), rl.RED)
                         rl.DrawFPS(5, 5)
                         rl.DrawText(strings.clone_to_cstring(time_survived_str, allocator = context.temp_allocator), 5, 25, 20, rl.WHITE)
                         rl.DrawText(strings.clone_to_cstring(frametime_str, allocator = context.temp_allocator), 5, 45, 20, rl.WHITE)
                         rl.DrawText(strings.clone_to_cstring(walls_str, allocator = context.temp_allocator), 5, 65, 20, rl.WHITE)
                         rl.DrawText(strings.clone_to_cstring(bullets_str, allocator = context.temp_allocator), 5, 85, 20, rl.WHITE)
-                        draw_walls(state)
-                        draw_bullets(state.bullets)
-                        rl.DrawCircleV(state.player_position, f32(state.player_radius), rl.RED)
                     rl.EndDrawing()
                     free_all(context.temp_allocator)
                 }
             }
             case .Menu:
             {
+                if rl.IsMusicStreamPlaying(sounds.background) { rl.StopMusicStream(sounds.background) }
                 if rl.IsKeyPressed(rl.KeyboardKey.ENTER) {
                     game_state = .Close
                     break
@@ -411,11 +439,41 @@ main :: proc() {
             }
             case .Lose:
             {
-                game_state = .Close
+                process_input(&state.input)
+                if Commands.Menu in state.input {
+                    game_state = .Menu
+                    window_size = {200, 400}
+                    rl.SetWindowSize(i32(window_size.x), i32(window_size.y))
+                }
+
+                time_survived_str := fmt.aprintf("You survived %.2v seconds", state.time_survived, allocator = context.temp_allocator)
+                frametime_str := fmt.aprintf("frametime: %v seconds", frametime, allocator = context.temp_allocator)
+                walls_str := fmt.aprintf("walls: %v", len(state.walls), allocator = context.temp_allocator)
+                bullets_str := fmt.aprintf("bullets: %v", len(state.bullets), allocator = context.temp_allocator)
+
+                rl.BeginDrawing()
+                    rl.ClearBackground(rl.BLACK)
+                    draw_walls(state)
+                    draw_bullets(state.bullets)
+                    rl.DrawCircleV(state.player_position, f32(state.player_radius), rl.RED)
+                    rl.DrawFPS(5, 5)
+                    rl.DrawText(strings.clone_to_cstring(time_survived_str, allocator = context.temp_allocator), 5, 25, 20, rl.WHITE)
+                    rl.DrawText(strings.clone_to_cstring(frametime_str, allocator = context.temp_allocator), 5, 45, 20, rl.WHITE)
+                    rl.DrawText(strings.clone_to_cstring(walls_str, allocator = context.temp_allocator), 5, 65, 20, rl.WHITE)
+                    rl.DrawText(strings.clone_to_cstring(bullets_str, allocator = context.temp_allocator), 5, 85, 20, rl.WHITE)
+                rl.EndDrawing()
+                free_all(context.temp_allocator)
             }
             case .Close: {}
         }
     }
 
+    rl.UnloadMusicStream(sounds.background)
+    rl.UnloadSound(sounds.fire)
+    rl.UnloadSound(sounds.lose)
+    rl.UnloadSound(sounds.collision)
+    rl.UnloadSound(sounds.wall_creation)
+    rl.UnloadSound(sounds.wall_destruction)
+    rl.CloseAudioDevice()
     rl.CloseWindow()
 }
