@@ -187,14 +187,14 @@ check_collision_bullets_walls :: proc(bullets: ^[dynamic]Bullet, walls: ^[dynami
         p3 := second_end + wall_normal_vector * f32(wall_thickness) / f32(2)
         p4 := second_end - wall_normal_vector * f32(wall_thickness) / f32(2)
 
-        collision_point^ = bullet.position + bullet.direction * circle_radius_f32
-        if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p1, p2) {
+        circle_edge := bullet.position + bullet.direction * circle_radius_f32
+        if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p1, p2) && rl.CheckCollisionLines(p1, p2, bullet.position, circle_edge, collision_point) {
             collision_normal_vector^ = linalg.vector_normalize(-1 * wall_vector)
-        } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p1, p3) {
+        } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p1, p3) && rl.CheckCollisionLines(p1, p3, bullet.position, circle_edge, collision_point) {
             collision_normal_vector^ = linalg.vector_normalize(wall_normal_vector)    
-        } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p3, p4) {
+        } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p3, p4) && rl.CheckCollisionLines(p3, p4, bullet.position, circle_edge, collision_point) {
             collision_normal_vector^ = linalg.vector_normalize(wall_vector)
-        } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p2, p4) {
+        } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p2, p4) && rl.CheckCollisionLines(p2, p4, bullet.position, circle_edge, collision_point) {
             collision_normal_vector^ = linalg.vector_normalize(-1 * wall_normal_vector)
         } else { return false }
 
