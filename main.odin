@@ -23,7 +23,7 @@ BulletType :: enum {
 }
 
 Wall :: struct {
-    x1, y1, x2, y2: u16,
+    x1, y1, x2, y2: i16,
     invulnerable:   bool // optional
 }
 
@@ -262,11 +262,12 @@ create_new_wall :: proc(walls: ^[dynamic]Wall, impact_direction, collision_point
     new_wall_vector: Vec2 = rl.Vector2Normalize({ -1 * impact_direction.y, impact_direction.x })
     p1 := collision_point + new_wall_vector * f32(length) / f32(2)
     p2 := collision_point - new_wall_vector * f32(length) / f32(2)
+
     new_wall: Wall = {
-        x1 = u16(p1.x),
-        y1 = u16(p1.y),
-        x2 = u16(p2.x),
-        y2 = u16(p2.y),
+        x1 = i16(p1.x),
+        y1 = i16(p1.y),
+        x2 = i16(p2.x),
+        y2 = i16(p2.y),
         invulnerable = false
     }
 
@@ -310,7 +311,6 @@ main :: proc() {
                     if check_collision_player(state) {
                         game_state = .Lose
                         window_size = {200, 200}
-                        fmt.println(window_size)
                         rl.SetWindowSize(i32(window_size.x), i32(window_size.y))
                         break
                     }
@@ -386,10 +386,7 @@ main :: proc() {
             {
                 game_state = .Close
             }
-            case .Close:
-            {
-
-            }
+            case .Close: {}
         }
     }
 
