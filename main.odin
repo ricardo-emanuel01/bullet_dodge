@@ -94,10 +94,6 @@ Error :: union #shared_nil {
 
 // --------------------------- UTILITY FUNCTIONS
 
-get_perp_vector :: proc(vector: Vec2) -> Vec2 {
-    return linalg.vector_normalize( Vec2 { -1 * vector.y, vector.x } )
-}
-
 read_json_file :: proc(state: ^State, filename: string, allocator := context.allocator) -> Error {
     contents := os.read_entire_file_from_filename_or_err(filename, context.temp_allocator) or_return
     json.unmarshal(contents, state, allocator = allocator) or_return
@@ -118,23 +114,22 @@ read_json_file :: proc(state: ^State, filename: string, allocator := context.all
 
 // --------------------------- UPDATE FUNCTIONS
 
-update_bullet_spawners :: proc(bullets: ^[dynamic]Bullet, bullet_spawners: ^[dynamic]BulletSpawner, fire_sound_fx: rl.Sound, frametime: f32) {
-    fire :: proc(bullets: ^[dynamic]Bullet, bullet_spawner: BulletSpawner) {
-        current_bullet: Bullet = {
-            position  = {f32(bullet_spawner.x), f32(bullet_spawner.y)},
-            direction = rl.Vector2Normalize({ rand.float32() * 2 - 1, rand.float32() * 2 - 1 }),
-            type      = bullet_spawner.bullet_type,
-            velocity  = bullet_spawner.velocity
-        }
-
-        append(bullets, current_bullet)
-    }
-    
+update_bullet_spawners :: proc(bullets: ^[dynamic]Bullet, bullet_spawners: ^[dynamic]BulletSpawner, fire_sound_fx: rl.Sound, frametime: f32) {    
     for &bullet_spawner in bullet_spawners {
         bullet_spawner.timer -= frametime
 
         if bullet_spawner.timer <= f32(0) {
-            fire(bullets, bullet_spawner)
+            { // Create new bullet
+                current_bullet: Bullet = {
+                    position  = {f32(bullet_spawner.x), f32(bullet_spawner.y)},
+                    direction = rl.Vector2Normalize({ rand.float32() * 2 - 1, rand.float32() * 2 - 1 }),
+                    type      = bullet_spawner.bullet_type,
+                    velocity  = bullet_spawner.velocity
+                }
+
+                append(bullets, current_bullet)
+            }
+
             rl.PlaySound(fire_sound_fx)
             bullet_spawner.timer = bullet_spawner.spawn_frequency
         }
@@ -185,7 +180,7 @@ check_collision_bullets_walls :: proc(bullets: ^[dynamic]Bullet, walls: ^[dynami
         first_end   := Vec2 { f32(wall.x1), f32(wall.y1) }
         second_end  := Vec2 { f32(wall.x2), f32(wall.y2) }
         wall_vector := second_end - first_end
-        wall_normal_vector := get_perp_vector(wall_vector)
+        wall_normal_vector := linalg.vector_normalize( Vec2 { -1 * wall_vector.y, wall_vector.x } )
 
         p1 := first_end  + wall_normal_vector * f32(wall_thickness) / f32(2)
         p2 := first_end  - wall_normal_vector * f32(wall_thickness) / f32(2)
@@ -206,24 +201,6 @@ check_collision_bullets_walls :: proc(bullets: ^[dynamic]Bullet, walls: ^[dynami
         return true
     }
 
-    create_new_wall :: proc(walls: ^[dynamic]Wall, impact_direction, collision_point: Vec2, length: u16) {
-        new_wall_vector: Vec2 = get_perp_vector(impact_direction)
-        p1 := collision_point + new_wall_vector * f32(length) / f32(2)
-        p2 := collision_point - new_wall_vector * f32(length) / f32(2)
-        invulnerable := false
-
-        if rand.uint32() % u32(2) == 1 { invulnerable = true }
-        new_wall: Wall = {
-            x1 = i16(p1.x),
-            y1 = i16(p1.y),
-            x2 = i16(p2.x),
-            y2 = i16(p2.y),
-            invulnerable = invulnerable
-        }
-
-        append(walls, new_wall)
-    }
-
     for i in 0..<len(bullets) {
         ray_cast: [2]Vec2 = { bullets[i].position, bullets[i].position + bullets[i].direction * (f32(thickness) + f32(BULLET_RADIUS)) }
         collision_point, collision_normal_vector: Vec2
@@ -242,7 +219,24 @@ check_collision_bullets_walls :: proc(bullets: ^[dynamic]Bullet, walls: ^[dynami
 
                     case .constructor:
                         rl.PlaySound(sounds.wall_creation)
-                        create_new_wall(walls, bullets[i].direction, collision_point, length)
+                        { // Create new wall
+                            impact_direction := bullets[i].direction
+                            new_wall_vector: Vec2 = linalg.vector_normalize( Vec2 { -1 * impact_direction.y, impact_direction.x } )
+                            p1 := collision_point + new_wall_vector * f32(length) / f32(2)
+                            p2 := collision_point - new_wall_vector * f32(length) / f32(2)
+                            invulnerable := false
+
+                            if rand.uint32() % u32(2) == 1 { invulnerable = true }
+                            new_wall: Wall = {
+                                x1 = i16(p1.x),
+                                y1 = i16(p1.y),
+                                x2 = i16(p2.x),
+                                y2 = i16(p2.y),
+                                invulnerable = invulnerable
+                            }
+
+                            append(walls, new_wall)
+                        }
                         unordered_remove(bullets, i)
 
                     case .bulldozer:
@@ -279,31 +273,29 @@ check_collision_player :: proc(state: ^State) -> bool {
 
 // --------------------------- DRAW FUNCTIONS
 
-draw_walls :: proc(state: ^State) {
-    for wall in state.walls {
-        rl.DrawLineEx({f32(wall.x1), f32(wall.y1)}, {f32(wall.x2), f32(wall.y2)}, f32(state.wall_thickness), rl.WHITE)
-    }
-}
-
-draw_bullets :: proc(bullets: [dynamic]Bullet) {
-    color: rl.Color
-    for bullet in bullets {
-        switch bullet.type {
-            case .bouncer:
-                color = rl.WHITE
-            case .bulldozer:
-                color = rl.GRAY
-            case .constructor:
-                color = rl.BLUE
-        }
-
-        rl.DrawCircleV(bullet.position, f32(BULLET_RADIUS), color)
-    }
-}
-
 draw_state :: proc(state: ^State) {
-    draw_walls(state)
-    draw_bullets(state.bullets)
+    { // Draw walls
+        for wall in state.walls {
+            rl.DrawLineEx({f32(wall.x1), f32(wall.y1)}, {f32(wall.x2), f32(wall.y2)}, f32(state.wall_thickness), rl.WHITE)
+        }
+    }
+
+    { // Draw bullets
+        color: rl.Color
+        for bullet in state.bullets {
+            switch bullet.type {
+                case .bouncer:
+                    color = rl.WHITE
+                case .bulldozer:
+                    color = rl.GRAY
+                case .constructor:
+                    color = rl.BLUE
+            }
+
+            rl.DrawCircleV(bullet.position, f32(BULLET_RADIUS), color)
+        }
+    }
+
     rl.DrawCircleV(state.player_position, f32(state.player_radius), rl.RED)
 }
 
@@ -401,21 +393,24 @@ main :: proc() {
     list_view_visibility := false
     window_size: Vec2 = {200, 400}
     state: ^State
+    sounds: Sounds
 
-    rl.SetConfigFlags({ rl.ConfigFlag.MSAA_4X_HINT });
-    rl.InitWindow(i32(window_size[0]), i32(window_size[1]), "Bullet Dodge")
-    rl.InitAudioDevice()
-    rl.SetTargetFPS(120)
-    rl.SetExitKey(rl.KeyboardKey.KEY_NULL)
-
-    sounds := Sounds {
-        background       = rl.LoadMusicStream("sounds/background.ogg"),
-        fire             = rl.LoadSound("sounds/fire.ogg"),
-        lose             = rl.LoadSound("sounds/lose.ogg"),
-        collision        = rl.LoadSound("sounds/collision.ogg"),
-        wall_creation    = rl.LoadSound("sounds/wall_creation.ogg"),
-        wall_destruction = rl.LoadSound("sounds/wall_destruction.ogg")
+    { // Init Raylib
+        rl.SetConfigFlags({ rl.ConfigFlag.MSAA_4X_HINT });
+        rl.InitWindow(i32(window_size[0]), i32(window_size[1]), "Bullet Dodge")
+        rl.InitAudioDevice()
+        rl.SetTargetFPS(120)
+        rl.SetExitKey(rl.KeyboardKey.KEY_NULL)
+        sounds = Sounds {
+            background       = rl.LoadMusicStream("sounds/background.ogg"),
+            fire             = rl.LoadSound("sounds/fire.ogg"),
+            lose             = rl.LoadSound("sounds/lose.ogg"),
+            collision        = rl.LoadSound("sounds/collision.ogg"),
+            wall_creation    = rl.LoadSound("sounds/wall_creation.ogg"),
+            wall_destruction = rl.LoadSound("sounds/wall_destruction.ogg")
+        }
     }
+
 
     for game_state != .Close {
         frametime: f32
@@ -490,6 +485,7 @@ main :: proc() {
             {
                 process_input(&state.input)
                 if Commands.Menu in state.input {
+                    if rl.IsSoundPlaying(sounds.lose) { rl.StopSound(sounds.lose) }
                     game_state = .Menu
                     window_size = {200, 400}
                     rl.SetWindowSize(i32(window_size.x), i32(window_size.y))
@@ -503,12 +499,14 @@ main :: proc() {
         }
     }
 
-    rl.UnloadMusicStream(sounds.background)
-    rl.UnloadSound(sounds.fire)
-    rl.UnloadSound(sounds.lose)
-    rl.UnloadSound(sounds.collision)
-    rl.UnloadSound(sounds.wall_creation)
-    rl.UnloadSound(sounds.wall_destruction)
-    rl.CloseAudioDevice()
-    rl.CloseWindow()
+    { // Deinit raylib
+        rl.UnloadMusicStream(sounds.background)
+        rl.UnloadSound(sounds.fire)
+        rl.UnloadSound(sounds.lose)
+        rl.UnloadSound(sounds.collision)
+        rl.UnloadSound(sounds.wall_creation)
+        rl.UnloadSound(sounds.wall_destruction)
+        rl.CloseAudioDevice()
+        rl.CloseWindow()
+    }
 }
