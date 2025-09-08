@@ -1,6 +1,7 @@
 package bullet_dodge
 
 
+import "base:runtime"
 import "core:fmt"
 import "core:encoding/json"
 import "core:os"
@@ -57,9 +58,8 @@ State :: struct {
     
     player_position:        Vec2,
     player_speed:           f32,
-    input:                  bit_set[Commands],
     time_survived:          f32,
-    game_state:             GameState,
+    input:                  bit_set[Commands],
     length_generated_walls: u16,
     map_width:              u16,
     map_height:             u16,
@@ -85,40 +85,22 @@ Commands :: enum {
     Enter
 }
 
-process_input :: proc(input: ^bit_set[Commands]) {
-    input^ = {}
-
-    if rl.IsKeyDown(rl.KeyboardKey.UP) {
-        input^ += {.Up}
-    }
-
-    if rl.IsKeyDown(rl.KeyboardKey.DOWN) {
-        input^ += {.Down}
-    }
-
-    if rl.IsKeyDown(rl.KeyboardKey.LEFT) {
-        input^ += {.Left}
-    }
-
-    if rl.IsKeyDown(rl.KeyboardKey.RIGHT) {
-        input^ += {.Right}
-    }
-
-    if rl.IsKeyPressed(rl.KeyboardKey.ESCAPE) {
-        input^ += {.Menu}
-    }
-
-    if rl.IsKeyPressed(rl.KeyboardKey.SPACE) {
-        input^ += {.Enter}
-    }
-
-    return
+Error :: union #shared_nil {
+    json.Error,
+    json.Unmarshal_Error,
+    os.Error,
+    runtime.Allocator_Error
 }
 
-read_json_file :: proc(state: ^State, filename: string, allocator := context.allocator) {
-    contents, ok := os.read_entire_file_from_filename(filename, context.temp_allocator)
+// --------------------------- UTILITY FUNCTIONS
 
-    json.unmarshal(contents, state, allocator = allocator)
+get_perp_vector :: proc(vector: Vec2) -> Vec2 {
+    return linalg.vector_normalize( Vec2 { -1 * vector.y, vector.x } )
+}
+
+read_json_file :: proc(state: ^State, filename: string, allocator := context.allocator) -> Error {
+    contents := os.read_entire_file_from_filename_or_err(filename, context.temp_allocator) or_return
+    json.unmarshal(contents, state, allocator = allocator) or_return
 
     for &bullet_spawner in state.bullet_spawners {
         bullet_spawner.timer = bullet_spawner.spawn_frequency
@@ -127,44 +109,27 @@ read_json_file :: proc(state: ^State, filename: string, allocator := context.all
     state.player_position        = { 50, 50 }
     state.player_speed           = 200
     state.player_radius          = 15
-    state.game_state             = .Menu
     state.length_generated_walls = 200
+
+    return nil
 }
 
-draw_walls :: proc(state: ^State) {
-    for wall in state.walls {
-        rl.DrawLineEx({f32(wall.x1), f32(wall.y1)}, {f32(wall.x2), f32(wall.y2)}, f32(state.wall_thickness), rl.WHITE)
-    }
-}
+// ---------------------------
 
-draw_bullets :: proc(bullets: [dynamic]Bullet) {
-    color: rl.Color
-    for bullet in bullets {
-        switch bullet.type {
-            case .bouncer:
-                color = rl.WHITE
-            case .bulldozer:
-                color = rl.GRAY
-            case .constructor:
-                color = rl.BLUE
-        }
-        // TODO: Define the radius of each projectile
-        rl.DrawCircleV(bullet.position, f32(BULLET_RADIUS), color)
-    }
-}
-
-fire :: proc(bullets: ^[dynamic]Bullet, bullet_spawner: BulletSpawner) {
-    current_bullet: Bullet = {
-        position  = {f32(bullet_spawner.x), f32(bullet_spawner.y)},
-        direction = rl.Vector2Normalize({ rand.float32() * 2 - 1, rand.float32() * 2 - 1 }),
-        type      = bullet_spawner.bullet_type,
-        velocity  = bullet_spawner.velocity
-    }
-
-    append(bullets, current_bullet)
-}
+// --------------------------- UPDATE FUNCTIONS
 
 update_bullet_spawners :: proc(bullets: ^[dynamic]Bullet, bullet_spawners: ^[dynamic]BulletSpawner, fire_sound_fx: rl.Sound, frametime: f32) {
+    fire :: proc(bullets: ^[dynamic]Bullet, bullet_spawner: BulletSpawner) {
+        current_bullet: Bullet = {
+            position  = {f32(bullet_spawner.x), f32(bullet_spawner.y)},
+            direction = rl.Vector2Normalize({ rand.float32() * 2 - 1, rand.float32() * 2 - 1 }),
+            type      = bullet_spawner.bullet_type,
+            velocity  = bullet_spawner.velocity
+        }
+
+        append(bullets, current_bullet)
+    }
+    
     for &bullet_spawner in bullet_spawners {
         bullet_spawner.timer -= frametime
 
@@ -210,44 +175,62 @@ update_player :: proc(state: ^State, frametime: f32) {
     state.player_position += direction * f32(state.player_speed) * frametime
 }
 
-get_perp_vector :: proc(vector: Vec2) -> Vec2 {
-    return linalg.vector_normalize( Vec2 { -1 * vector.y, vector.x } )
-}
+// ---------------------------
 
-check_collision_bullet_wall :: proc(wall: Wall, bullet: Bullet, wall_thickness: u8, collision_point, collision_normal_vector: ^Vec2) -> bool {
-    circle_radius_f32 := f32(BULLET_RADIUS)
-    first_end   := Vec2 { f32(wall.x1), f32(wall.y1) }
-    second_end  := Vec2 { f32(wall.x2), f32(wall.y2) }
-    wall_vector := second_end - first_end
-    wall_normal_vector := get_perp_vector(wall_vector)
-
-    p1 := first_end  + wall_normal_vector * f32(wall_thickness) / f32(2)
-    p2 := first_end  - wall_normal_vector * f32(wall_thickness) / f32(2)
-    p3 := second_end + wall_normal_vector * f32(wall_thickness) / f32(2)
-    p4 := second_end - wall_normal_vector * f32(wall_thickness) / f32(2)
-
-    collision_point^ = bullet.position + bullet.direction * circle_radius_f32
-    if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p1, p2) {
-        collision_normal_vector^ = linalg.vector_normalize(-1 * wall_vector)
-    } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p1, p3) {
-        collision_normal_vector^ = linalg.vector_normalize(wall_normal_vector)    
-    } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p3, p4) {
-        collision_normal_vector^ = linalg.vector_normalize(wall_vector)
-    } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p2, p4) {
-        collision_normal_vector^ = linalg.vector_normalize(-1 * wall_normal_vector)
-    } else { return false }
-
-    return true
-}
+// --------------------------- COLLISION LOGIC
 
 check_collision_bullets_walls :: proc(bullets: ^[dynamic]Bullet, walls: ^[dynamic]Wall, sounds: Sounds, length: u16, thickness: u8) {
+    check_collision :: proc(wall: Wall, bullet: Bullet, wall_thickness: u8, collision_point, collision_normal_vector: ^Vec2) -> bool {
+        circle_radius_f32 := f32(BULLET_RADIUS)
+        first_end   := Vec2 { f32(wall.x1), f32(wall.y1) }
+        second_end  := Vec2 { f32(wall.x2), f32(wall.y2) }
+        wall_vector := second_end - first_end
+        wall_normal_vector := get_perp_vector(wall_vector)
+
+        p1 := first_end  + wall_normal_vector * f32(wall_thickness) / f32(2)
+        p2 := first_end  - wall_normal_vector * f32(wall_thickness) / f32(2)
+        p3 := second_end + wall_normal_vector * f32(wall_thickness) / f32(2)
+        p4 := second_end - wall_normal_vector * f32(wall_thickness) / f32(2)
+
+        collision_point^ = bullet.position + bullet.direction * circle_radius_f32
+        if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p1, p2) {
+            collision_normal_vector^ = linalg.vector_normalize(-1 * wall_vector)
+        } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p1, p3) {
+            collision_normal_vector^ = linalg.vector_normalize(wall_normal_vector)    
+        } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p3, p4) {
+            collision_normal_vector^ = linalg.vector_normalize(wall_vector)
+        } else if rl.CheckCollisionCircleLine(bullet.position, circle_radius_f32, p2, p4) {
+            collision_normal_vector^ = linalg.vector_normalize(-1 * wall_normal_vector)
+        } else { return false }
+
+        return true
+    }
+
+    create_new_wall :: proc(walls: ^[dynamic]Wall, impact_direction, collision_point: Vec2, length: u16) {
+        new_wall_vector: Vec2 = get_perp_vector(impact_direction)
+        p1 := collision_point + new_wall_vector * f32(length) / f32(2)
+        p2 := collision_point - new_wall_vector * f32(length) / f32(2)
+        invulnerable := false
+
+        if rand.uint32() % u32(2) == 1 { invulnerable = true }
+        new_wall: Wall = {
+            x1 = i16(p1.x),
+            y1 = i16(p1.y),
+            x2 = i16(p2.x),
+            y2 = i16(p2.y),
+            invulnerable = invulnerable
+        }
+
+        append(walls, new_wall)
+    }
+
     for i in 0..<len(bullets) {
         ray_cast: [2]Vec2 = { bullets[i].position, bullets[i].position + bullets[i].direction * (f32(thickness) + f32(BULLET_RADIUS)) }
         collision_point, collision_normal_vector: Vec2
 
         // TODO: Check for the closest one
         for j in 0..<len(walls) {
-            if check_collision_bullet_wall(walls[j], bullets[i], thickness, &collision_point, &collision_normal_vector) {
+            if check_collision(walls[j], bullets[i], thickness, &collision_point, &collision_normal_vector) {
                 switch bullets[i].type {
                     case .bouncer:
                         rl.PlaySound(sounds.collision)
@@ -292,34 +275,131 @@ check_collision_player :: proc(state: ^State) -> bool {
     return false
 }
 
-create_new_wall :: proc(walls: ^[dynamic]Wall, impact_direction, collision_point: Vec2, length: u16) {
-    new_wall_vector: Vec2 = get_perp_vector(impact_direction)
-    p1 := collision_point + new_wall_vector * f32(length) / f32(2)
-    p2 := collision_point - new_wall_vector * f32(length) / f32(2)
-    invulnerable := false
+// ---------------------------
 
-    if rand.uint32() % u32(2) == 1 { invulnerable = true }
-    new_wall: Wall = {
-        x1 = i16(p1.x),
-        y1 = i16(p1.y),
-        x2 = i16(p2.x),
-        y2 = i16(p2.y),
-        invulnerable = invulnerable
+// --------------------------- DRAW FUNCTIONS
+
+draw_walls :: proc(state: ^State) {
+    for wall in state.walls {
+        rl.DrawLineEx({f32(wall.x1), f32(wall.y1)}, {f32(wall.x2), f32(wall.y2)}, f32(state.wall_thickness), rl.WHITE)
+    }
+}
+
+draw_bullets :: proc(bullets: [dynamic]Bullet) {
+    color: rl.Color
+    for bullet in bullets {
+        switch bullet.type {
+            case .bouncer:
+                color = rl.WHITE
+            case .bulldozer:
+                color = rl.GRAY
+            case .constructor:
+                color = rl.BLUE
+        }
+
+        rl.DrawCircleV(bullet.position, f32(BULLET_RADIUS), color)
+    }
+}
+
+draw_state :: proc(state: ^State) {
+    draw_walls(state)
+    draw_bullets(state.bullets)
+    rl.DrawCircleV(state.player_position, f32(state.player_radius), rl.RED)
+}
+
+draw_HUD :: proc(state: ^State, frametime: f32) {
+    defer free_all(context.temp_allocator)
+    time_survived_str := fmt.aprintf("You survived %.2v seconds", state.time_survived, allocator = context.temp_allocator)
+    frametime_str := fmt.aprintf("frametime: %v seconds", frametime, allocator = context.temp_allocator)
+    walls_str := fmt.aprintf("walls: %v", len(state.walls), allocator = context.temp_allocator)
+    bullets_str := fmt.aprintf("bullets: %v", len(state.bullets), allocator = context.temp_allocator)
+
+    rl.DrawFPS(5, 5)
+    rl.DrawText(strings.clone_to_cstring(time_survived_str, allocator = context.temp_allocator), 5, 25, 20, rl.LIME)
+    rl.DrawText(strings.clone_to_cstring(frametime_str, allocator = context.temp_allocator), 5, 45, 20, rl.LIME)
+    rl.DrawText(strings.clone_to_cstring(walls_str, allocator = context.temp_allocator), 5, 65, 20, rl.LIME)
+    rl.DrawText(strings.clone_to_cstring(bullets_str, allocator = context.temp_allocator), 5, 85, 20, rl.LIME)
+}
+
+draw_game :: proc(state: ^State, frametime: f32) {
+    rl.ClearBackground(rl.BLACK)
+    draw_state(state)
+    draw_HUD(state, frametime)
+}
+
+// ---------------------------
+
+process_input :: proc(input: ^bit_set[Commands]) {
+    input^ = {}
+
+    if rl.IsKeyDown(rl.KeyboardKey.UP) {
+        input^ += {.Up}
     }
 
-    append(walls, new_wall)
+    if rl.IsKeyDown(rl.KeyboardKey.DOWN) {
+        input^ += {.Down}
+    }
+
+    if rl.IsKeyDown(rl.KeyboardKey.LEFT) {
+        input^ += {.Left}
+    }
+
+    if rl.IsKeyDown(rl.KeyboardKey.RIGHT) {
+        input^ += {.Right}
+    }
+
+    if rl.IsKeyPressed(rl.KeyboardKey.ESCAPE) {
+        input^ += {.Menu}
+    }
+
+    if rl.IsKeyPressed(rl.KeyboardKey.SPACE) {
+        input^ += {.Enter}
+    }
+
+    return
+}
+
+@require_results
+manage_GUI :: proc(state: ^State, window_size: Vec2, list_view_visibility: ^bool, current_levels: ^[]string) -> (level_selected: i32, err: Error) {
+    level_selected = -1
+
+    selection_button := rl.Rectangle { window_size[0] / 2 - 60, 20, 120, 40 }
+    if rl.GuiButton(selection_button, "select your level") {
+        list_view_visibility^ = !list_view_visibility^
+    }
+
+    if list_view_visibility^ {
+        scroll_index: i32
+
+        current_levels^ = fp.glob("levels/*.json", context.temp_allocator) or_else []string{}
+
+        level_file_names := make([dynamic]string, context.temp_allocator)
+
+        for level_fp in current_levels {
+            _, filename := fp.split(level_fp)
+            append(&level_file_names,  filename)
+        }
+
+        level_names_view := strings.join(level_file_names[:], ";", allocator = context.temp_allocator) or_return
+
+        level_names_view_cstring := strings.clone_to_cstring(level_names_view, allocator = context.temp_allocator)
+
+        dropdown_menu_rectangle := rl.Rectangle {window_size[0] / 2 - 60, 60, 120, f32(len(level_file_names)) * 35}
+        rl.GuiListView(dropdown_menu_rectangle, level_names_view_cstring, &scroll_index, &level_selected)
+    }
+
+    return level_selected, nil
 }
 
 main :: proc() {
-    allocator_data: AllocatorData
     arena_mem := make([]byte, 1 * mem.Megabyte)
     arena: mem.Arena
     mem.arena_init(&arena, arena_mem)
     arena_alloc := mem.arena_allocator(&arena)
+
     game_state := GameState.Menu
     list_view_visibility := false
     window_size: Vec2 = {200, 400}
-
     state: ^State
 
     rl.SetConfigFlags({ rl.ConfigFlag.MSAA_4X_HINT });
@@ -365,27 +445,14 @@ main :: proc() {
                         break
                     }
     
-                    time_survived_str := fmt.aprintf("You survived %.2v seconds", state.time_survived, allocator = context.temp_allocator)
-                    frametime_str := fmt.aprintf("frametime: %v seconds", frametime, allocator = context.temp_allocator)
-                    walls_str := fmt.aprintf("walls: %v", len(state.walls), allocator = context.temp_allocator)
-                    bullets_str := fmt.aprintf("bullets: %v", len(state.bullets), allocator = context.temp_allocator)
-    
                     rl.BeginDrawing()
-                        rl.ClearBackground(rl.BLACK)
-                        draw_walls(state)
-                        draw_bullets(state.bullets)
-                        rl.DrawCircleV(state.player_position, f32(state.player_radius), rl.RED)
-                        rl.DrawFPS(5, 5)
-                        rl.DrawText(strings.clone_to_cstring(time_survived_str, allocator = context.temp_allocator), 5, 25, 20, rl.LIME)
-                        rl.DrawText(strings.clone_to_cstring(frametime_str, allocator = context.temp_allocator), 5, 45, 20, rl.LIME)
-                        rl.DrawText(strings.clone_to_cstring(walls_str, allocator = context.temp_allocator), 5, 65, 20, rl.LIME)
-                        rl.DrawText(strings.clone_to_cstring(bullets_str, allocator = context.temp_allocator), 5, 85, 20, rl.LIME)
+                        draw_game(state, frametime)
                     rl.EndDrawing()
-                    free_all(context.temp_allocator)
                 }
             }
             case .Menu:
             {
+                current_levels: []string
                 if rl.IsMusicStreamPlaying(sounds.background) { rl.StopMusicStream(sounds.background) }
                 if rl.IsKeyPressed(rl.KeyboardKey.ENTER) {
                     game_state = .Close
@@ -394,31 +461,9 @@ main :: proc() {
 
                 rl.BeginDrawing()
                     rl.ClearBackground(rl.BLACK)
-                    selection_button := rl.Rectangle {window_size[0] / 2 - 60, 20, 120, 40}
-                    if rl.GuiButton(selection_button, "select your level") {
-                        list_view_visibility = !list_view_visibility
-                    }
+                    level_selected, error_GUI := manage_GUI(state, window_size, &list_view_visibility, &current_levels)
 
-                    if list_view_visibility {
-                        scroll_index: i32
-                        level_selected: i32 = -1
-    
-                        curr_maps := fp.glob("levels/*.json", context.temp_allocator) or_else []string{}
-    
-                        level_file_names := make([dynamic]string, context.temp_allocator)
-    
-                        for map_filepath in curr_maps {
-                            _, filename := fp.split(map_filepath)
-                            append(&level_file_names,  filename)
-                        }
-    
-                        level_names_view, err := strings.join(level_file_names[:], ";", allocator = context.temp_allocator)
-                        assert(err == nil)
-                        level_names_view_cstring := strings.clone_to_cstring(level_names_view, allocator = context.temp_allocator)
-    
-                        dropdown_menu_rectangle := rl.Rectangle {window_size[0] / 2 - 60, 60, 120, f32(len(level_file_names)) * 35}
-                        rl.GuiListView(dropdown_menu_rectangle, level_names_view_cstring, &scroll_index, &level_selected)
-    
+                    if (error_GUI == nil) {
                         if level_selected >= 0 {
                             if state != nil {
                                 free_all(arena_alloc)
@@ -426,10 +471,18 @@ main :: proc() {
     
                             state = new(State, arena_alloc)
                             game_state = .Playing
-                            read_json_file(state, curr_maps[level_selected], arena_alloc)
-                            window_size = {f32(state.map_width), f32(state.map_height)}
-                            rl.SetWindowSize(i32(state.map_width), i32(state.map_height))
+                            error_reading_JSON := read_json_file(state, current_levels[level_selected], arena_alloc)
+                            if error_reading_JSON == nil {
+                                window_size = {f32(state.map_width), f32(state.map_height)}
+                                rl.SetWindowSize(i32(state.map_width), i32(state.map_height))
+                            } else {
+                                fmt.eprintln("Error:", error_reading_JSON)
+                                game_state = .Close
+                            }
                         }
+                    } else {
+                        fmt.eprintln("Error:", error_GUI)
+                        game_state = .Close
                     }
                 rl.EndDrawing()
             }
@@ -442,23 +495,9 @@ main :: proc() {
                     rl.SetWindowSize(i32(window_size.x), i32(window_size.y))
                 }
 
-                time_survived_str := fmt.aprintf("You survived %.2v seconds", state.time_survived, allocator = context.temp_allocator)
-                frametime_str := fmt.aprintf("frametime: %v seconds", frametime, allocator = context.temp_allocator)
-                walls_str := fmt.aprintf("walls: %v", len(state.walls), allocator = context.temp_allocator)
-                bullets_str := fmt.aprintf("bullets: %v", len(state.bullets), allocator = context.temp_allocator)
-
                 rl.BeginDrawing()
-                    rl.ClearBackground(rl.BLACK)
-                    draw_walls(state)
-                    draw_bullets(state.bullets)
-                    rl.DrawCircleV(state.player_position, f32(state.player_radius), rl.RED)
-                    rl.DrawFPS(5, 5)
-                    rl.DrawText(strings.clone_to_cstring(time_survived_str, allocator = context.temp_allocator), 5, 25, 20, rl.LIME)
-                    rl.DrawText(strings.clone_to_cstring(frametime_str, allocator = context.temp_allocator), 5, 45, 20, rl.LIME)
-                    rl.DrawText(strings.clone_to_cstring(walls_str, allocator = context.temp_allocator), 5, 65, 20, rl.LIME)
-                    rl.DrawText(strings.clone_to_cstring(bullets_str, allocator = context.temp_allocator), 5, 85, 20, rl.LIME)
+                    draw_game(state, frametime)
                 rl.EndDrawing()
-                free_all(context.temp_allocator)
             }
             case .Close: {}
         }
